@@ -1,0 +1,286 @@
+\documentclass[11pt, a4paper]{article}
+
+% Necessary Packages
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+% Geometry setup
+\geometry{
+    top=2.5cm,
+    bottom=2.5cm,
+    left=2.5cm,
+    right=2.5cm
+}
+
+% Theorem Environments
+\newtheorem{theorem}{Theorem}
+\newtheorem{definition}{Definition}
+\newtheorem{remark}{Remark}
+
+% Title Information
+\title{An Overview of the Deep Uzawa-Lagrange Multipliers approach for PINNs and Deep Ritz Methods}
+\author{Casper Dong, Bochen Zhang, Jacob Zhang}
+\date{December 10, 2025}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+The numerical approximation of partial differential equations (PDEs) using artificial neural networks (ANNs) has gained significant attention in recent years. Prominent examples include the Deep Ritz method, which approximates solutions by minimising the Dirichlet functional, and Physics-Informed Neural Networks (PINNs), which minimise the $L^2$-norm of the PDE residuals.
+
+Despite their success, a significant challenge in these methods lies in the enforcement of boundary conditions. The non-standard nature of neural network approximation spaces makes this issue particularly pronounced. Standard approaches typically rely on penalty terms to enforce boundary conditions. However, this method often requires large penalty coefficients to achieve accuracy, resulting in ill-conditioned optimisation problems that are difficult to tune and can lead to suboptimal solutions. This issue is particularly severe in problems involving singular perturbations or complex domains.
+
+To address these challenges, the paper \textit{A Deep Uzawa-Lagrange Multiplier Approach for Boundary Conditions in PINNs and Deep Ritz Methods} \cite{makridakis2024deep} proposed extending the Lagrange multiplier framework from finite element analysis to neural network-based PDE solvers. The paper develops a class of algorithms termed \textit{Deep Uzawa algorithms}, which iteratively solve the resulting saddle point problems to impose boundary conditions. The key innovation lies in adapting Uzawa's algorithm to this context, allowing for efficient iterative approximation of PDEs where boundary conditions are enforced using an augmented Lagrangian formulation.
+
+\section{Problem Description}
+
+We focus on self-adjoint elliptic problems, which serve as a fundamental class of PDEs for testing variational methods. Consider a domain $\Omega \subset \mathbb{R}^d$ with boundary $\partial \Omega$. We consider the problem defined by a strictly positive definite matrix $A \in \mathbb{R}^{d \times d}$, a source term $f \in L^2(\Omega)$, and boundary data $g \in H^{1/2}(\partial \Omega)$.
+
+We seek a solution $u$ such that:
+\begin{equation}
+    \mathcal{L}u := -\text{div}(A\nabla u) + u = f \quad \text{in } \Omega,
+\end{equation}
+subject to the Dirichlet boundary condition:
+\begin{equation}
+    u|_{\partial\Omega} = g.
+\end{equation}
+
+\subsection{Motivating Example: Two-sided 1D Boundary Layer}
+A motivating example for our study is the singularly perturbed 1D boundary layer problem. We seek $u \in H^1(\Omega)$ on the domain $\Omega = (0,1)$ satisfying:
+\begin{equation}
+    -\epsilon\Delta u + u = 1, \quad u(0) = u(1) = 0,
+\end{equation}
+where $\epsilon > 0$ is a small parameter. As $\epsilon \to 0$, the solution develops sharp boundary layers at the endpoints. Standard penalty methods struggle here: if the penalty parameter $\gamma$ is not sufficiently large, the boundary conditions are easily violated; if $\gamma$ is too large, the optimization landscape becomes stiff, leading to a sub-optimal minimizer.
+
+\section{Methodology}
+
+\subsection{The Deep Ritz Method}
+The Deep Ritz method typically solves the PDE by minimizing a variational functional. For the self-adjoint problem described above, the solution corresponds to the minimizer of the Dirichlet functional:
+\begin{equation}
+    I_D(u) := \frac{1}{2}\|A^{1/2}\nabla u\|_{L^2(\Omega)}^2 + \frac{1}{2}\|u\|_{L^2(\Omega)}^2 - \langle f,u\rangle_{L^2(\Omega)}.
+\end{equation}
+The Euler-Lagrange equation of this functional corresponds precisely to the PDE $\mathcal{L}u = f$.
+
+To enforce boundary conditions in the standard Deep Ritz framework, a penalty term is added to the functional:
+\begin{equation} \label{eq:penalty_functional}
+    J_D(u) := I_D(u) + \frac{\gamma}{2}\|u - g\|_{L^2(\partial \Omega)}^2.
+\end{equation}
+However, minimizing \eqref{eq:penalty_functional} does not strictly solve the Dirichlet problem. Instead, the resulting Euler-Lagrange equations imply a Robin boundary condition:
+\begin{equation}
+    n \cdot A\nabla u + \gamma(u - g) = 0 \quad \text{on } \partial \Omega.
+\end{equation}
+Thus, the minimizer satisfies the Dirichlet condition $u=g$ only in the limit as $\gamma \to \infty$. This observation motivates the use of Lagrange multipliers to enforce the condition strongly without relying on asymptotic penalty parameters.
+
+\subsection{Lagrange Multiplier Formulation}
+To incorporate the boundary condition $u=g$ weakly but exactly, we introduce a Lagrange multiplier $\lambda$. We define the Lagrangian $L_D: H^1(\Omega) \times H^{-1/2}(\partial \Omega) \to \mathbb{R}$ as:
+\begin{equation}
+    L_D(u, \lambda) := I_D(u) - \langle \lambda, u - g \rangle_{H^{-1/2}(\partial\Omega)\times H^{1/2}(\partial\Omega)}.
+\end{equation}
+We then seek the \textbf{saddle points} $(u^*, \lambda^*)$ such that:
+\begin{equation}
+    (u^*, \lambda^*) = \arg \min_{u \in H^1(\Omega)} \arg \max_{\lambda \in H^{-1/2}(\partial\Omega)} L_D(u, \lambda).
+\end{equation}
+The Euler-Lagrange equations for this saddle point problem recover the original PDE system precisely, along with the boundary flux condition:
+\begin{equation}
+    -\lambda^* + n \cdot A \nabla u^* = 0 \quad \text{on } \partial \Omega.
+\end{equation}
+
+\subsection{The Deep Uzawa Algorithm}
+We solve the saddle point problem using an iterative Uzawa scheme. This separates the optimization into two alternating steps: minimizing the Lagrangian with respect to $u$ (the primal variable) and performing a gradient ascent update on $\lambda$ (the dual variable).
+
+\subsubsection{Algorithm Description}
+For a given initial guess $\lambda^0$ and a step size $\rho > 0$, we generate a sequence of functions $\{(u^k, \lambda^k)\}$ via the following updates:
+\begin{enumerate}
+    \item \textbf{Primal Update:} Find $u^k$ that minimizes the Lagrangian for the fixed current multiplier $\lambda^k$:
+    \begin{equation}
+        u^k = \arg \min_{u \in H^1(\Omega)} L_D(u, \lambda^k).
+    \end{equation}
+    In the context of deep learning, $u$ is parameterized by a neural network $u_\theta$. We perform $N_{\text{SGD}}$ steps of stochastic gradient descent to approximate this minimization.
+    
+    \item \textbf{Dual Update:} Update the Lagrange multiplier using the constraint residual:
+    \begin{equation}
+        \lambda^{k+1} = \lambda^k - \rho (u^k - g).
+    \end{equation}
+    In our implementation, $\lambda$ is discretized at boundary points.
+\end{enumerate}
+
+Intuitively, this process can be visualized as a dynamic interaction. Where the boundary error $\left| u^k - g \right|$ is large, the multiplier $\left| \lambda \right|$ increases to penalize the discrepancy. In the subsequent primal update, the energy landscape changes such that $u^{k+1}$ adapts better to $g$ on the boundary, reducing the error. This dynamic ensures that the constraint is enforced exactly upon convergence.
+
+\begin{remark}
+It is important to note that the theoretical analysis presented in the original paper focuses on self-adjoint elliptic problems. While PINNs are often applied to generic nonlinear PDEs, the convergence guarantees for PINNUz rely on the coercivity of the least-squares functional over the Sobolev space $H^2(\Omega)$. For generic non-elliptic or time-dependent operators, this coercivity may not hold, potentially affecting the stability of the saddle point formulation.
+\end{remark}
+
+The complete procedure is summarized in Algorithm \ref{alg:uzawa}.
+
+\begin{algorithm}[H]
+\caption{Deep Uzawa Iteration}
+\label{alg:uzawa}
+\begin{algorithmic}[1]
+\Require Initial guess $\lambda^0$, Uzawa step size $\rho > 0$, number of Uzawa steps $N_{\text{Uz}}$, number of SGD iterations $N_{\text{SGD}}$, learning rate $\eta$.
+\State $k \gets 0$
+\State Initialise neural network parameters $\theta^0$
+\For{$k = 1$ to $N_{\text{Uz}}$}
+    \For{$m = 0$ to $N_{\text{SGD}} - 1$}
+        \State Compute stochastic gradient $\nabla_\theta L_{D}(u_\theta^m, \lambda^k)$
+        \State Update parameters: $\theta^{m+1} \gets \theta^m - \eta \nabla_\theta L_{D}(u_\theta^m, \lambda^k)$
+    \EndFor
+    \State $u^k \gets u_\theta^{N_{\text{SGD}}}$
+    \State Update Lagrange multiplier: $\lambda^{k+1}(b) \gets \lambda^k(b) - \rho (u^k(b) - g(b))$, $\forall b \in \partial \mathcal{K}_h$
+    \State $k \gets k + 1$
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Extension to PINNs (PINNUz)}
+The framework naturally extends to Physics-Informed Neural Networks (PINNs), where the loss is based on the PDE residual rather than an energy potential. We define the PINN cost functional as:
+\begin{equation}
+    J_R(u) := \frac{1}{2}\|\mathcal{L}u - f\|_{L^2(\Omega)}^2 + \frac{\gamma}{2}\|u - g\|_{L^2(\partial \Omega)}^2.
+\end{equation}
+By introducing a Lagrange multiplier to the boundary term, we form the PINN Lagrangian:
+\begin{equation}
+    L_R(u, \lambda) := J_R(u) - \langle \lambda, u - g \rangle.
+\end{equation}
+The algorithm proceeds identically to the Deep Ritz case, simply substituting $L_D$ with $L_R$. This extension, termed PINNUz, allows for robust boundary enforcement even when a variational principle is not available or preferred.
+
+\section{Experimental Results}
+
+This section briefly outlines the experimental results that validate the proposed methods. We focus on the two-sided 1D boundary layer problem described in Section 2.1, where the exact solution is known, allowing for precise error analysis. The problem is solved using a fully connected feed-forward neural network (FFNN) with depth 5 and width 40.
+
+The experiments investigate the impact of the following parameters (hyperparameters) on convergence:
+\begin{itemize}
+    \item \textbf{Singular perturbation parameter $\epsilon$:} We test regimes where $\epsilon=0.1$ (mild) and $\epsilon=0.001$ (rigid), the latter producing sharp boundary layers that challenge standard methods.
+    \item \textbf{Penalty coefficient $\gamma$:} We compare the standard penalty method (large $\gamma$) against the Uzawa method (small or zero $\gamma$).
+    \item \textbf{Uzawa step size $\rho$:} We analyze stability of the algorithm by varying the learning rate of the Lagrange multiplier.
+\end{itemize}
+
+\subsection{Mild Regime}
+
+In the mild regime ($\epsilon=0.1$), the algorithm demonstrates robust convergence for both $\gamma=0$ and $\gamma=2$. Notably, the case with $\gamma=0$, where boundary conditions are enforced solely by the Lagrangian multiplier, exhibits faster and smoother convergence. This suggests that even in mild regimes, the presence of the penalty term may introduce unnecessary stiffness, partially ill-conditioning the minimization landscape.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{output/epsilon=1e-1, gamma=0, rho=0.1, n_sgd=40, n_uz=100, eta=1e-3, beta=1000.png}
+        \caption{$\epsilon=0.1, \gamma=0, \rho=0.1$}
+        \label{fig:hist1-1}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{output/epsilon=1e-1, gamma=2, rho=0.1, n_sgd=40, n_uz=100, eta=1e-3, beta=1000.png}
+        \caption{$\epsilon=0.1, \gamma=2, \rho=0.1$}
+        \label{fig:hist1-2}
+    \end{subfigure}
+    \label{fig:hists-1}
+\end{figure}
+
+\pagebreak
+\subsection{Rigid Regime}
+
+Conversely, in the rigid regime ($\epsilon=0.001$), the algorithm's behavior shifts. We observe that without the penalty term ($\gamma=0$), the method fails to converge, whereas the inclusion of the penalty term ($\gamma=2$) restores convergence. This indicates that in singularly perturbed settings where the boundary layers are sharp, the penalty term plays a crucial stabilizing role, likely by providing a necessary coercive force that guides the early stages of optimization.
+
+\begin{remark}
+Despite the observed failure in individual trials for $\gamma=0$, it is noteworthy that divergence is not always the case. Across multiple realizations, the mean error often exhibits convergence, suggesting that the instability is due to the unfortunate initialization of the neural network. This behavior can be rigorously explained by examining the theoretical convergence condition derived in Theorem 3.1 of the original paper:
+\begin{equation}
+    \rho - 2\gamma < \frac{2\min\{\sigma_{\min}, 1\}}{C_{tr}^2}.
+\end{equation}
+For our 1D domain $\Omega=(0,1)$, the trace constant is $C_{tr} \approx \sqrt{(e+1)/(e-1)} \approx 1.47$. Given $\sigma_{\min} = \epsilon = 0.001$ and $\gamma=0$, the condition simplifies to $\rho < 2 \times 0.001 / 1.47^2 \approx 0.0009$. In our experiment, we used $\rho=0.1$, which violates this upper bound by two orders of magnitude, thus providing a theoretical basis for the observed instability.
+\end{remark}
+
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{output/epsilon=1e-3, gamma=0, rho=0.1, n_sgd=40, n_uz=500, eta=1e-3, beta=1000.png}
+        \caption{$\epsilon=0.001, \gamma=0, \rho=0.1$}
+        \label{fig:hist2-1}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{output/epsilon=1e-3, gamma=2, rho=0.1, n_sgd=40, n_uz=100, eta=1e-3, beta=1000.png}
+        \caption{$\epsilon=0.001, \gamma=2, \rho=0.1$}
+        \label{fig:hist2-2}
+    \end{subfigure}
+    \label{fig:hists-2}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{output/epsilon=1e-3, gamma=0, rho=0.1, n_sgd=40, n_uz=500, eta=1e-3, beta=1000, sol.png}
+        \caption{$\epsilon=0.001, \gamma=0, \rho=0.1$}
+        \label{fig:sol2-1}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{output/epsilon=1e-3, gamma=2, rho=0.1, n_sgd=40, n_uz=100, eta=1e-3, beta=1000, sol.png}
+        \caption{$\epsilon=0.001, \gamma=2, \rho=0.1$}
+        \label{fig:sol2-2}
+    \end{subfigure}
+    \label{fig:sol-2}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{output/epsilon=1e-3, gamma=0, rho=0.1, n_sgd=40, n_uz=100, eta=1e-3, beta=1000, run=10.png}
+        \caption{$\epsilon=0.001, \gamma=0, \rho=0.1$, over $10$ runs}
+        \label{fig:hist3-1}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{output/epsilon=1e-3, gamma=2, rho=0.1, n_sgd=40, n_uz=100, eta=1e-3, beta=1000, run=10.png}
+        \caption{$\epsilon=0.001, \gamma=2, \rho=0.1$, over $10$ runs}
+        \label{fig:hist3-2}
+    \end{subfigure}
+    \label{fig:hists-3}
+\end{figure}
+
+Finally, we examine the sensitivity to the Uzawa step size by decreasing the learning rate $\rho$. In this configuration, both $\gamma$ values lead to successful convergence. Consistent with the mild regime, the pure Lagrangian approach ($\gamma=0$) again yields a smoother and more rapid convergence trajectory. This reinforces the potential of the Uzawa method to outperform standard penalty methods when the hyperparameters are appropriately tuned to the problem's stiffness.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{output/epsilon=1e-3, gamma=0, rho=0.01, n_sgd=40, n_uz=100, eta=1e-3, beta=1000.png}
+        \caption{$\epsilon=0.001, \gamma=0, \rho=0.1$}
+        \label{fig:hist4-1}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{output/epsilon=1e-3, gamma=2, rho=0.01, n_sgd=40, n_uz=100, eta=1e-3, beta=1000.png}
+        \caption{$\epsilon=0.001, \gamma=2, \rho=0.01$}
+        \label{fig:hist4-2}
+    \end{subfigure}
+    \label{fig:hists-4}
+\end{figure}
+
+\section{Conclusion}
+
+In this project, we presented the Deep Uzawa algorithm, a method for imposing boundary conditions in neural network-based PDE solvers through Lagrange multipliers. By formulating the training objective as a saddle point problem, we moved beyond the limitations of standard penalty methods.
+
+The theoretical and practical implications of this approach are significant. First, it allows for the strong enforcement of boundary conditions without the numerical stiffness associated with large penalty parameters $\gamma$. Second, the method is versatile, easily extending from the variational Deep Ritz method (RitUz) to the residual-based PINN method (PINNUz).
+
+Finally, the framework demonstrates promise for broader applications, such as elliptic Stochastic PDEs (SPDEs) with parametric uncertainty. The adaptive nature of the Lagrange multiplier allows the network to learn the specific force required to enforce boundary conditions for different realizations of the stochastic coefficients, offering a distinct advantage over fixed-penalty approaches in high-dimensional or uncertain environments.
+
+\bibliographystyle{plain}
+\bibliography{ref}
+
+\end{document}
